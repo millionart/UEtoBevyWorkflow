@@ -22,6 +22,7 @@ Use `--uasset <file>` instead of `--asset` for a file in a Content directory. Se
 | `capture` | Read-only snapshot of asset, compiled defaults, graphs, pins, links, layout, and supported typed properties. |
 | `graph-plan` | Reachability from the AnimBP root, including states, transition graphs, cache producers, callbacks, and external dependencies. Captures for referenced packages are separate. |
 | `animgraph` | Bevy Animation Graph RON for a single unlinked, non-looping Sequence Player with unit rate, zero start, no sync group, and a caller-supplied clip mapping. Other graph shapes stay plans until a target adapter covers their semantics. |
+| `animation` | Animation-only GLB from an Unreal glTF export, with animation keys, node hierarchy and skin bindings. |
 | `rig-plan` | Complete authored graph plus compiled RigVM and hierarchy contract. |
 | `rig` | Typed program and hierarchy for `bevy_control_rig` as JSON or, for `.ron` output, a RigDefinition RON value. Unmapped unit types, unresolved coordinates or dimensions, and unsupported instructions fail. |
 | `curve` | Rich curve channels with key times, values, interpolation, tangents and weights, defaults, and extrapolation. Values retain the declared input units. |
@@ -31,6 +32,14 @@ For a stock clip graph, author a JSON object mapping the full source animation o
 ```json
 {"/Game/Animation/A_Example.A_Example":"animations/example.anim.ron"}
 ```
+
+Export the sequence from Unreal as glTF or GLB. If the project adds scalar curve extensions, embed them in the export before running the conversion. Point the clip descriptor's `GltfNamed` source at the resulting GLB, and point the animated scene at the model that supplies the mesh.
+
+```sh
+python3 tools/port.py animation --gltf .work/example.gltf --output assets/animations/example.glb
+```
+
+The converter copies the original key bytes, including STEP timing, and preserves animation extensions such as `ALS_float_curves`. Morph weight tracks require a mesh and are rejected by this stage.
 
 ```sh
 python3 tools/port.py animgraph --capture .work/blueprint.json --clips .work/clips.json --output .work/example.animgraph.ron
