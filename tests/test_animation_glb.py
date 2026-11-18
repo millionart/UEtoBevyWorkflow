@@ -52,9 +52,9 @@ class AnimationGlbTest(unittest.TestCase):
         }), encoding="utf-8")
         return source, binds + struct.pack("<2f", 0.0, 0.2) + poses
 
-    def convert(self, source, output):
+    def convert(self, source, output, kind="animation"):
         return subprocess.run(
-            [sys.executable, "-B", str(TOOLS / "port.py"), "animation",
+            [sys.executable, "-B", str(TOOLS / "port.py"), kind,
              "--gltf", str(source), "--output", str(output)],
             capture_output=True, text=True,
         )
@@ -96,4 +96,28 @@ class AnimationGlbTest(unittest.TestCase):
             result = self.convert(source, output)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("weights require a mesh", result.stderr)
+            self.assertFalse(output.exists())
+
+    def test_model_packs_the_full_buffer_and_keeps_external_texture_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source, _ = self.export(directory)
+            document = json.loads(source.read_bytes())
+            document["images"] = [{"uri": "base-color.png"}]
+            document["textures"] = [{"source": 0}]
+            document["materials"] = [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}]
+            source.write_text(json.dumps(document), encoding="utf-8")
+            output = directory / "model.glb"
+            result = self.convert(source, output, kind="model")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            packed, binary = read_gltf(output)
+            buffer = document["buffers"][0]
+            self.assertEqual(binary[:buffer["byteLength"]], (directory / buffer.pop("uri")).read_bytes())
+            self.assertEqual(packed, document)
+
+            document["images"] = [{"bufferView": 3, "mimeType": "image/png"}]
+            source.write_text(json.dumps(document), encoding="utf-8")
+            output = directory / "embedded.glb"
+            result = self.convert(source, output, kind="model")
+            self.assertNotEqual(result.returncode, 0)
             self.assertFalse(output.exists())

@@ -38,6 +38,7 @@
 #include "Animation/ActiveMontageInstanceScope.h"
 #include "Animation/AnimMontageEvaluationState.h"
 #include "Animation/AnimNotifyQueue.h"
+#include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimRootMotionProvider.h"
@@ -184,7 +185,8 @@ TSharedRef<FJsonObject> CaptureTransform(const FTransform& Transform)
     return Value;
 }
 
-TArray<TSharedPtr<FJsonValue>> CaptureProperties(const UStruct* Struct, const void* Data, UObject* Parent, bool bIncludeUnitMetadata = false)
+TArray<TSharedPtr<FJsonValue>> CaptureProperties(const UStruct* Struct, const void* Data, UObject* Parent,
+    bool bIncludeUnitMetadata = false, const void* Defaults = nullptr)
 {
     TArray<TSharedPtr<FJsonValue>> Values;
 
@@ -193,6 +195,11 @@ TArray<TSharedPtr<FJsonValue>> CaptureProperties(const UStruct* Struct, const vo
         const FProperty* Property = *Iterator;
         for (int32 ArrayIndex = 0; ArrayIndex < Property->ArrayDim; ++ArrayIndex)
         {
+            if (Defaults != nullptr &&
+                (!Property->HasAnyPropertyFlags(CPF_Edit) || Property->Identical_InContainer(Data, Defaults, ArrayIndex)))
+            {
+                continue;
+            }
             const void* Value = Property->ContainerPtrToValuePtr<void>(Data, ArrayIndex);
             FString ExportedText;
             Property->ExportTextItem_Direct(ExportedText, Value, nullptr, Parent, PPF_None);
@@ -3469,6 +3476,89 @@ TArray<TSharedPtr<FJsonValue>> CaptureSequenceSyncMarkers(const UAnimSequence& S
         Markers.Add(MakeShared<FJsonValueObject>(Value));
     }
     return Markers;
+}
+
+TSharedRef<FJsonObject> CaptureAnimationTimeline(const UAnimSequenceBase& Source)
+{
+    const auto Id = [](const FGuid& Guid)
+    {
+        return Guid.ToString(EGuidFormats::UniqueObjectGuid);
+    };
+    TSharedRef<FJsonObject> Timeline = MakeShared<FJsonObject>();
+    Timeline->SetNumberField(TEXT("sequence_length"), Source.GetPlayLength());
+    TArray<TSharedPtr<FJsonValue>> Events;
+    for (const FAnimNotifyEvent& Notify : Source.Notifies)
+    {
+        TSharedRef<FJsonObject> Event = MakeShared<FJsonObject>();
+        UObject* Handler = Notify.NotifyStateClass.Get();
+        if (Handler == nullptr)
+        {
+            Handler = Notify.Notify.Get();
+        }
+        Event->SetStringField(TEXT("id"), Id(Notify.Guid));
+        Event->SetStringField(TEXT("name"), Notify.NotifyName.ToString());
+        Event->SetStringField(TEXT("kind"), Notify.NotifyStateClass != nullptr ? TEXT("state") : TEXT("point"));
+        Event->SetStringField(TEXT("class"), Handler != nullptr ? Handler->GetClass()->GetName() : Notify.NotifyName.ToString());
+        Event->SetNumberField(TEXT("start_time"), Notify.GetTriggerTime());
+        Event->SetNumberField(TEXT("end_time"), Notify.NotifyStateClass != nullptr ? Notify.GetEndTriggerTime() : Notify.GetTriggerTime());
+        Event->SetNumberField(TEXT("trigger_time_offset"), Notify.TriggerTimeOffset);
+        Event->SetNumberField(TEXT("weight_threshold"), Notify.TriggerWeightThreshold);
+        Event->SetNumberField(TEXT("track_index"), Notify.TrackIndex);
+        Event->SetStringField(TEXT("track"), Source.AnimNotifyTracks.IsValidIndex(Notify.TrackIndex)
+            ? Source.AnimNotifyTracks[Notify.TrackIndex].TrackName.ToString() : TEXT(""));
+        Event->SetStringField(TEXT("linked_montage"), ObjectPath(Notify.GetLinkedMontage()));
+        Event->SetStringField(TEXT("linked_sequence"), ObjectPath(Notify.GetLinkedSequence()));
+        TSharedRef<FJsonObject> Filter = MakeShared<FJsonObject>();
+        Filter->SetStringField(TEXT("type"), StaticEnum<ENotifyFilterType::Type>()->GetNameByValue(Notify.NotifyFilterType).ToString());
+        Filter->SetNumberField(TEXT("lod"), Notify.NotifyFilterLOD);
+        Filter->SetBoolField(TEXT("trigger_on_follower"), Notify.bTriggerOnFollower);
+        Filter->SetBoolField(TEXT("trigger_on_dedicated_server"), Notify.bTriggerOnDedicatedServer);
+        Filter->SetNumberField(TEXT("trigger_chance"), Notify.NotifyTriggerChance);
+        Filter->SetStringField(TEXT("montage_tick_type"), StaticEnum<EMontageNotifyTickType::Type>()->GetNameByValue(Notify.MontageTickType).ToString());
+        Event->SetObjectField(TEXT("filter"), Filter);
+        Event->SetArrayField(TEXT("parameters"), Handler != nullptr
+            ? CaptureProperties(Handler->GetClass(), Handler, Handler, false, Handler->GetClass()->GetDefaultObject())
+            : TArray<TSharedPtr<FJsonValue>>{});
+        Events.Add(MakeShared<FJsonValueObject>(Event));
+    }
+    Timeline->SetArrayField(TEXT("events"), Events);
+
+    TArray<TSharedPtr<FJsonValue>> Markers;
+    if (const UAnimSequence* Sequence = Cast<UAnimSequence>(&Source))
+    {
+        for (const FAnimSyncMarker& Marker : Sequence->AuthoredSyncMarkers)
+        {
+            TSharedRef<FJsonObject> Value = MakeShared<FJsonObject>();
+            Value->SetStringField(TEXT("id"), Id(Marker.Guid));
+            Value->SetStringField(TEXT("name"), Marker.MarkerName.ToString());
+            Value->SetNumberField(TEXT("time"), Marker.Time);
+            Value->SetNumberField(TEXT("track_index"), Marker.TrackIndex);
+            Markers.Add(MakeShared<FJsonValueObject>(Value));
+        }
+    }
+    Timeline->SetArrayField(TEXT("sync_markers"), Markers);
+
+    if (const UAnimMontage* Montage = Cast<UAnimMontage>(&Source))
+    {
+        TArray<TSharedPtr<FJsonValue>> Segments;
+        for (const FSlotAnimationTrack& Track : Montage->SlotAnimTracks)
+        {
+            for (const FAnimSegment& Segment : Track.AnimTrack.AnimSegments)
+            {
+                TSharedRef<FJsonObject> Value = MakeShared<FJsonObject>();
+                Value->SetStringField(TEXT("source_sequence"), ObjectPath(Segment.GetAnimReference()));
+                Value->SetStringField(TEXT("slot"), Track.SlotName.ToString());
+                Value->SetNumberField(TEXT("start_position"), Segment.StartPos);
+                Value->SetNumberField(TEXT("animation_start_time"), Segment.AnimStartTime);
+                Value->SetNumberField(TEXT("animation_end_time"), Segment.AnimEndTime);
+                Value->SetNumberField(TEXT("play_rate"), Segment.AnimPlayRate);
+                Value->SetNumberField(TEXT("loop_count"), Segment.LoopingCount);
+                Segments.Add(MakeShared<FJsonValueObject>(Value));
+            }
+        }
+        Timeline->SetArrayField(TEXT("segments"), Segments);
+    }
+    return Timeline;
 }
 
 TSharedPtr<FJsonObject> CaptureSyncGroupClockProbe(UObject* Asset, const FString& RequestPath)
@@ -6804,6 +6894,10 @@ int32 UBevySourceReaderCommandlet::Main(const FString& Params)
     Root->SetStringField(TEXT("asset_path"), Asset->GetPathName());
     Root->SetStringField(TEXT("asset_class"), Asset->GetClass()->GetPathName());
     Root->SetArrayField(TEXT("asset_properties"), CaptureProperties(Asset->GetClass(), Asset, Asset));
+    if (const UAnimSequenceBase* Animation = Cast<UAnimSequenceBase>(Asset))
+    {
+        Root->SetObjectField(TEXT("animation_timeline"), CaptureAnimationTimeline(*Animation));
+    }
     if (const UAnimSequence* Sequence = Cast<UAnimSequence>(Asset))
     {
         TSharedRef<FJsonObject> Timing = MakeShared<FJsonObject>();

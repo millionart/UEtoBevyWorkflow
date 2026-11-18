@@ -23,6 +23,8 @@ Use `--uasset <file>` instead of `--asset` for a file in a Content directory. Se
 | `graph-plan` | Reachability from the AnimBP root, including states, transition graphs, cache producers, callbacks, and external dependencies. Captures for referenced packages are separate. |
 | `animgraph` | Bevy Animation Graph RON for a single unlinked, non-looping Sequence Player with unit rate, zero start, no sync group, and a caller-supplied clip mapping. Other graph shapes stay plans until a target adapter covers their semantics. |
 | `animation` | Animation-only GLB from an Unreal glTF export, with animation keys, node hierarchy and skin bindings. |
+| `model` | GLB with the full model geometry, materials, hierarchy and skin bindings. External texture paths stay relative to the model. |
+| `notify` | Per-sequence or per-montage metadata with native notify intervals, filters, sync markers, Slot segments, and montage playback parameters. |
 | `rig-plan` | Complete authored graph plus compiled RigVM and hierarchy contract. |
 | `rig` | Typed program and hierarchy for `bevy_control_rig` as JSON or, for `.ron` output, a RigDefinition RON value. Unmapped unit types, unresolved coordinates or dimensions, and unsupported instructions fail. |
 | `curve` | Rich curve channels with key times, values, interpolation, tangents and weights, defaults, and extrapolation. Values retain the declared input units. |
@@ -40,6 +42,22 @@ python3 tools/port.py animation --gltf .work/example.gltf --output assets/animat
 ```
 
 The converter copies the original key bytes, including STEP timing, and preserves animation extensions such as `ALS_float_curves`. Morph weight tracks require a mesh and are rejected by this stage.
+
+Export model textures as separate files. The model converter packs the geometry buffer and retains every other model field, including the texture URIs. Keep those texture files at the same paths relative to the new model.
+
+```sh
+python3 tools/port.py model --gltf .work/example.gltf --output assets/models/example.glb
+```
+
+Use `notify` with the same clip map to export metadata beside an animation or its montage. Montage segments resolve their source sequences through that map. Capture now reads the native notify clocks and authored markers with Unreal's animation APIs.
+
+```sh
+python3 tools/port.py notify --asset /Game/Animation/A_Example.A_Example --clips .work/clips.json --output assets/animations/A_Example.notify.json
+python3 tools/port.py notify --asset /Game/Animation/AM_Example.AM_Example --clips .work/clips.json --output assets/animations/AM_Example.montage.json
+python3 tools/notify_assets.py --assets-root assets --index animations/notify_index.json
+```
+
+The last command scans animation metadata, writes a path-only index, and projects notify intervals into Bevy clips. Use `--check` to verify generated tracks. Keep notify edits in the adjacent metadata. The compiler reports event tracks that also contain unrelated authored Bevy events so those tracks can be preserved.
 
 ```sh
 python3 tools/port.py animgraph --capture .work/blueprint.json --clips .work/clips.json --output .work/example.animgraph.ron

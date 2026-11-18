@@ -1,4 +1,4 @@
-"""Pack the skeletal animation data from a glTF export without its preview mesh."""
+"""Pack glTF exports as animation-only or mesh-preserving GLBs."""
 
 import base64
 import json
@@ -170,10 +170,29 @@ def animation_glb(path: Path) -> bytes:
     if buffer:
         document["buffers"] = [{"byteLength": len(buffer)}]
         document["bufferViews"] = buffer_views
+    return encode_glb(document, buffer)
+
+
+def model_glb(path: Path) -> bytes:
+    document, embedded = read_gltf(path)
+    buffers = document.get("buffers", [])
+    if not document.get("meshes") or len(buffers) != 1:
+        raise ValueError("model conversion requires meshes and one glTF buffer")
+    if any(
+        not image.get("uri") or image["uri"].startswith("data:") or "bufferView" in image
+        for image in document.get("images", [])
+    ):
+        raise ValueError("export model textures as separate files before packing the geometry")
+    binary = read_buffer(path, buffers[0], embedded)
+    buffers[0].pop("uri", None)
+    return encode_glb(document, binary)
+
+
+def encode_glb(document, buffer):
     text = json.dumps(document, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
     text += b" " * (-len(text) % 4)
     chunks = struct.pack("<I4s", len(text), b"JSON") + text
     if buffer:
-        buffer.extend(b"\0" * (-len(buffer) % 4))
-        chunks += struct.pack("<I4s", len(buffer), b"BIN\0") + buffer
+        padded_buffer = buffer + b"\0" * (-len(buffer) % 4)
+        chunks += struct.pack("<I4s", len(padded_buffer), b"BIN\0") + padded_buffer
     return struct.pack("<4sII", b"glTF", 2, 12 + len(chunks)) + chunks

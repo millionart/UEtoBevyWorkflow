@@ -7,7 +7,8 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / 'ue_port'))
-from animation_glb import animation_glb
+from animation_glb import animation_glb, model_glb
+from animation_notify import notify_record
 from animgraph import graph_plan, single_clip_graph
 from curves import convert_curve
 from ue_control_rig_contract import compile_contract
@@ -43,16 +44,17 @@ def capture(asset):
 def run(args):
     if args.output.exists():
         raise ValueError('output already exists')
-    if args.kind == 'animation':
+    if args.kind in {'animation', 'model'}:
         if args.gltf is None or args.output.suffix.lower() != '.glb':
-            raise ValueError('animation conversion needs --gltf and a .glb output')
-        result = animation_glb(args.gltf)
+            raise ValueError(f'{args.kind} conversion needs --gltf and a .glb output')
+        convert = animation_glb if args.kind == 'animation' else model_glb
+        result = convert(args.gltf)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open('xb') as output:
             output.write(result)
         return
     if getattr(args, 'gltf', None) is not None:
-        raise ValueError('--gltf is only used by the animation command')
+        raise ValueError('--gltf is only used by the animation and model commands')
     if args.capture:
         data = json.loads(args.capture.read_text(encoding='utf-8'))
     else:
@@ -69,6 +71,10 @@ def run(args):
             result = single_clip_graph(result, json.loads(args.clips.read_text(encoding='utf-8')))
     elif args.kind == 'curve':
         result = convert_curve(data)
+    elif args.kind == 'notify':
+        if args.clips is None:
+            raise ValueError('notify conversion needs a target clip map')
+        result = notify_record(data, json.loads(args.clips.read_bytes()))
     elif args.kind in {'rig-plan','rig'}:
         result = compile_contract(data)
         if args.kind == 'rig':
@@ -83,12 +89,12 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('kind', choices=['capture', 'graph-plan', 'animgraph', 'animation', 'rig-plan', 'rig', 'curve'])
+    parser.add_argument('kind', choices=['capture', 'graph-plan', 'animgraph', 'animation', 'model', 'notify', 'rig-plan', 'rig', 'curve'])
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--asset', help='mounted UE object path ending in .AssetName')
     source.add_argument('--uasset', type=Path, help='asset file inside the selected Content root')
     source.add_argument('--capture', type=Path, help='replay an existing editor snapshot')
-    source.add_argument('--gltf', type=Path, help='Unreal animation export (.gltf or .glb)')
+    source.add_argument('--gltf', type=Path, help='Unreal animation or model export (.gltf or .glb)')
     parser.add_argument('--content-root', type=Path)
     parser.add_argument('--mount', default='/Game')
     parser.add_argument('--root-graph', default='AnimGraph')
